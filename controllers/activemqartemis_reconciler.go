@@ -15,21 +15,21 @@ import (
 	"unicode"
 
 	"github.com/RHsyseng/operator-utils/pkg/resource/compare"
-	"github.com/artemiscloud/activemq-artemis-operator/pkg/resources"
-	"github.com/artemiscloud/activemq-artemis-operator/pkg/resources/containers"
-	"github.com/artemiscloud/activemq-artemis-operator/pkg/resources/ingresses"
-	"github.com/artemiscloud/activemq-artemis-operator/pkg/resources/persistentvolumeclaims"
-	"github.com/artemiscloud/activemq-artemis-operator/pkg/resources/pods"
-	"github.com/artemiscloud/activemq-artemis-operator/pkg/resources/routes"
-	"github.com/artemiscloud/activemq-artemis-operator/pkg/resources/secrets"
-	"github.com/artemiscloud/activemq-artemis-operator/pkg/resources/serviceports"
-	ss "github.com/artemiscloud/activemq-artemis-operator/pkg/resources/statefulsets"
-	"github.com/artemiscloud/activemq-artemis-operator/pkg/utils/certutil"
-	"github.com/artemiscloud/activemq-artemis-operator/pkg/utils/common"
-	"github.com/artemiscloud/activemq-artemis-operator/pkg/utils/cr2jinja2"
-	"github.com/artemiscloud/activemq-artemis-operator/pkg/utils/jolokia_client"
-	"github.com/artemiscloud/activemq-artemis-operator/pkg/utils/namer"
-	"github.com/artemiscloud/activemq-artemis-operator/version"
+	"github.com/arkmq-org/activemq-artemis-operator/pkg/resources"
+	"github.com/arkmq-org/activemq-artemis-operator/pkg/resources/containers"
+	"github.com/arkmq-org/activemq-artemis-operator/pkg/resources/ingresses"
+	"github.com/arkmq-org/activemq-artemis-operator/pkg/resources/persistentvolumeclaims"
+	"github.com/arkmq-org/activemq-artemis-operator/pkg/resources/pods"
+	"github.com/arkmq-org/activemq-artemis-operator/pkg/resources/routes"
+	"github.com/arkmq-org/activemq-artemis-operator/pkg/resources/secrets"
+	"github.com/arkmq-org/activemq-artemis-operator/pkg/resources/serviceports"
+	ss "github.com/arkmq-org/activemq-artemis-operator/pkg/resources/statefulsets"
+	"github.com/arkmq-org/activemq-artemis-operator/pkg/utils/certutil"
+	"github.com/arkmq-org/activemq-artemis-operator/pkg/utils/common"
+	"github.com/arkmq-org/activemq-artemis-operator/pkg/utils/cr2jinja2"
+	"github.com/arkmq-org/activemq-artemis-operator/pkg/utils/jolokia_client"
+	"github.com/arkmq-org/activemq-artemis-operator/pkg/utils/namer"
+	"github.com/arkmq-org/activemq-artemis-operator/version"
 	"github.com/go-logr/logr"
 	"github.com/pkg/errors"
 	"k8s.io/apimachinery/pkg/api/equality"
@@ -45,9 +45,9 @@ import (
 
 	rtclient "sigs.k8s.io/controller-runtime/pkg/client"
 
-	"github.com/artemiscloud/activemq-artemis-operator/pkg/resources/environments"
-	svc "github.com/artemiscloud/activemq-artemis-operator/pkg/resources/services"
-	"github.com/artemiscloud/activemq-artemis-operator/pkg/resources/volumes"
+	"github.com/arkmq-org/activemq-artemis-operator/pkg/resources/environments"
+	svc "github.com/arkmq-org/activemq-artemis-operator/pkg/resources/services"
+	"github.com/arkmq-org/activemq-artemis-operator/pkg/resources/volumes"
 
 	"reflect"
 
@@ -58,7 +58,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	brokerv1beta1 "github.com/artemiscloud/activemq-artemis-operator/api/v1beta1"
+	brokerv1beta1 "github.com/arkmq-org/activemq-artemis-operator/api/v1beta1"
 
 	"strconv"
 	"strings"
@@ -2424,22 +2424,32 @@ func (reconciler *ActiveMQArtemisReconcilerImpl) PodTemplateSpecForCR(customReso
 		// env from CR can override
 		pts.Spec.Containers[0].Env = append(pts.Spec.Containers[0].Env, customResource.Spec.Env...)
 
-		var reEvalJdkJavaOpts string = ""
-		currentEnv = environments.Retrieve(pts.Spec.Containers, jdkJavaOptionsEnvVarName)
-		if currentEnv != nil {
-			// support STATEFUL_SET_ORDINAL in JDK_JAVA_OPTIONS from CR
-			reEvalJdkJavaOpts = `export JDK_JAVA_OPTIONS=${JDK_JAVA_OPTIONS//\\$\\{STATEFUL_SET_ORDINAL\\}/${HOSTNAME##*-}};`
-		}
+		reEvalJdkOpts := generateReEvalOrdinaEnvReplacement(customResource.Spec.Env)
 
 		pts.Spec.Containers[0].Command = []string{
 			"/bin/bash", "-c",
-			fmt.Sprintf("export STATEFUL_SET_ORDINAL=${HOSTNAME##*-}; %s exec java %s $JAVA_ARGS_APPEND org.apache.activemq.artemis.core.server.embedded.Main", reEvalJdkJavaOpts, commandLineString),
+			fmt.Sprintf("export STATEFUL_SET_ORDINAL=${HOSTNAME##*-}; %s exec java %s $JAVA_ARGS_APPEND org.apache.activemq.artemis.core.server.embedded.Main", reEvalJdkOpts, commandLineString),
 		}
 	}
 
 	reqLogger.V(2).Info("Final Init spec", "Detail", podSpec.InitContainers)
 
 	return pts, nil
+}
+
+// support ${STATEFUL_SET_ORDINAL} replacement in JDK options from CR env if necessary
+func generateReEvalOrdinaEnvReplacement(envVars []corev1.EnvVar) (cmd string) {
+	cmd = ""
+	for _, envVar := range envVars {
+		if supportsOrdinalReplacement(envVar) {
+			cmd += fmt.Sprintf("export %s=${%s//\\$\\{STATEFUL_SET_ORDINAL\\}/${HOSTNAME##*-}}; ", envVar.Name, envVar.Name)
+		}
+	}
+	return cmd
+}
+
+func supportsOrdinalReplacement(envVar corev1.EnvVar) bool {
+	return (envVar.Name == jdkJavaOptionsEnvVarName || envVar.Name == javaArgsAppendEnvVarName) && strings.Contains(envVar.Value, "${STATEFUL_SET_ORDINAL}")
 }
 
 func getJaasConfigEnvVarName(customResource *brokerv1beta1.ActiveMQArtemis) string {
